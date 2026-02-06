@@ -1,0 +1,5 @@
+{
+  "name": "StreetGap Web",
+  "description": "A serverless tool to visualize undriven roads using Overture Maps and Mapillary, powered by in-browser DuckDB-Wasm.",
+  "requestFramePermissions": []
+}
