@@ -1,20 +1,21 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import { BoundingBox, DataStatus, MapSettings, ProcessingStats } from '../types';
-import { DuckDBService } from '../services/db';
-import { OvertureService } from '../services/overture';
-import { MapillaryService } from '../services/mapillary';
-import { Map, Navigation } from 'lucide-react';
-import * as arrow from 'apache-arrow';
+import { ArrowBigRightDash, Map } from 'lucide-react';
 import { SearchControl } from './SearchControl';
+import { AnalysisService } from '../services/analysis';
+import { RoutingService } from '../services/routing';
+import { exportToGPX } from '../utils/export';
 
+// Extend the GeoJSON source to allow us to define custom layer paint properties
 interface Props {
   settings: MapSettings;
+  status: DataStatus;
   onStatusChange: (status: DataStatus) => void;
   onStatsChange: (stats: ProcessingStats) => void;
 }
 
-export const StreetGapMap: React.FC<Props> = ({ settings, onStatusChange, onStatsChange }) => {
+export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange, onStatsChange }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
@@ -71,7 +72,14 @@ export const StreetGapMap: React.FC<Props> = ({ settings, onStatusChange, onStat
         });
       });
 
-      map.current.on('error', (e) => {
+      map.current.on('error', (e: any) => {
+        if (e && e.error && typeof e.error.message === 'string' && 
+            (e.error.message.includes('404') || e.error.message.includes('403') || e.error.message.includes('401'))) {
+          return;
+        }
+        if (e.tile) {
+          return; // Suppress missing tile errors to avoid console spam
+        }
         console.error("StreetGapMap: Map error", e);
       });
     } catch (err) {
@@ -82,6 +90,7 @@ export const StreetGapMap: React.FC<Props> = ({ settings, onStatusChange, onStat
     return () => {
       map.current?.remove();
       map.current = null;
+      setIsMapReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -121,135 +130,46 @@ export const StreetGapMap: React.FC<Props> = ({ settings, onStatusChange, onStat
     }
 
     try {
-      const db = DuckDBService.getInstance();
-
-      // 1. Fetch Roads
-      onStatusChange(DataStatus.FETCHING_OVERTURE);
-      await OvertureService.fetchRoads(bbox);
-
-      // 2. Fetch Coverage
-      onStatusChange(DataStatus.FETCHING_MAPILLARY);
-      const minDate = new Date();
-      minDate.setFullYear(minDate.getFullYear() - settings.lookbackYears);
-
-      await MapillaryService.fetchCoverage(bbox, settings.mapillaryToken, minDate.toISOString());
-
-      // 3. Process Differences
       onStatusChange(DataStatus.PROCESSING);
-      const conn = await db.getConnection();
 
-      const startAnalysis = performance.now();
+      // Extract Mapillary Vector features from the currently loaded map style in memory
+      const cutoffMs = Date.now() - (settings.lookbackYears * 365.25 * 24 * 60 * 60 * 1000);
+      let coverageGeoJson: any = { type: "FeatureCollection", features: [] };
 
-      // Find roads that are NOT within 20 meters of any coverage point
-      // Note: Full ST_Difference is heavy, we use ST_DWithin check for performance in Wasm
-      // Ideally we would buffer the coverage points and subtract, but checking distance is faster for "undriven" classification
-      // "LEFT JOIN ... WHERE coverage.geom IS NULL" logic
-
-      // Create result table
-      await conn.query(`
-        CREATE OR REPLACE TABLE undriven_roads AS
-        SELECT 
-            r.id,
-            r.geometry
-        FROM raw_roads r
-        WHERE NOT EXISTS (
-            SELECT 1 
-            FROM coverage c 
-            WHERE ST_DWithin(r.geometry, c.geometry, ${settings.bufferSize / 111000}) -- Approx degrees conversion
-        )
-      `);
-
-      // 4. Extract for Render
-      // Get GeoJSON from DuckDB
-      // We convert geometry to WKT or use ST_AsGeoJSON if available
-      const result = await conn.query(`
-        SELECT ST_AsGeoJSON(geometry) as geom_json FROM undriven_roads
-      `);
-
-      const features: any[] = [];
-      // Iterate Arrow Table
-      const numRows = result.numRows;
-      const geomCol = result.getChild('geom_json');
-
-      if (geomCol) {
-        for (let i = 0; i < numRows; i++) {
-          const rawJson = geomCol.get(i);
-          if (rawJson) {
-            features.push({
-              type: "Feature",
-              geometry: JSON.parse(rawJson),
-              properties: { status: "undriven" }
-            });
-          }
-        }
-      }
-
-      const geoJsonData = {
-        type: "FeatureCollection" as const,
-        features: features
-      };
-
-      // 5. Update Coverage Layer
-      const coverageResult = await conn.query(`SELECT ST_AsGeoJSON(geometry) as geom_json FROM coverage`);
-      const coverageFeatures: any[] = [];
-      const covNumRows = coverageResult.numRows;
-      const covGeomCol = coverageResult.getChild('geom_json');
-
-      if (covGeomCol) {
-        for (let i = 0; i < covNumRows; i++) {
-          const rawJson = covGeomCol.get(i);
-          if (rawJson) {
-            coverageFeatures.push({
-              type: "Feature",
-              geometry: JSON.parse(rawJson),
-              properties: {}
-            });
-          }
-        }
-      }
-
-      const coverageGeoJson = {
-        type: "FeatureCollection" as const,
-        features: coverageFeatures
-      };
-
-      if (map.current.getSource('coverage-source')) {
-        (map.current.getSource('coverage-source') as maplibregl.GeoJSONSource).setData(coverageGeoJson);
-        // Explicitly sync visibility when data updates
-        if (map.current.getLayer('coverage-layer')) {
-          map.current.setLayoutProperty('coverage-layer', 'visibility', settings.showCoverage ? 'visible' : 'none');
-        }
-      } else {
-        map.current.addSource('coverage-source', {
-          type: 'geojson',
-          data: coverageGeoJson
+      if (settings.mapillaryToken) {
+        // Find visible mapillary geometries directly from the vector tiles mapped to long/lat GeoJSON
+        const features = map.current.querySourceFeatures('mapillary-mvt', { sourceLayer: 'sequence' });
+        
+        // Filter out coverage that is older than our allowed threshold
+        const filteredCoverage = features.filter(f => {
+          return f.properties && f.properties.captured_at >= cutoffMs;
         });
-        map.current.addLayer({
-          id: 'coverage-layer',
-          type: 'circle',
-          source: 'coverage-source',
-          paint: {
-            'circle-color': '#facc15', // Neon Yellow
-            'circle-radius': 4,
-            'circle-opacity': 0.8,
-            'circle-stroke-width': 1,
-            'circle-stroke-color': '#000'
-          },
-          layout: {
-            'visibility': settings.showCoverage ? 'visible' : 'none'
-          }
-        });
+
+        coverageGeoJson.features = filteredCoverage.map(f => ({
+          type: "Feature",
+          geometry: f.geometry,
+          properties: f.properties
+        }));
       }
 
-      console.log(`StreetGapMap: Analysis complete. Found ${coverageFeatures.length} coverage points and ${count} undriven segments.`);
+      // Pass the coverage GeoJSON down to the analysis service!
+      const result = await AnalysisService.runCoverageAnalysis(
+        bbox, 
+        settings, 
+        coverageGeoJson, 
+        (s) => onStatusChange(s as DataStatus)
+      );
+
+      // 5. Update Coverage Layer (Removed redundant yellow dots)
+      // Visual feedback is cleanly handled by the green mapillary-mvt-layer directly.
 
       // 6. Update Undriven Layer
       if (map.current.getSource('undriven-source')) {
-        (map.current.getSource('undriven-source') as maplibregl.GeoJSONSource).setData(geoJsonData);
+        (map.current.getSource('undriven-source') as maplibregl.GeoJSONSource).setData(result.undrivenGeoJson);
       } else {
         map.current.addSource('undriven-source', {
           type: 'geojson',
-          data: geoJsonData
+          data: result.undrivenGeoJson
         });
         map.current.addLayer({
           id: 'undriven-layer',
@@ -260,24 +180,40 @@ export const StreetGapMap: React.FC<Props> = ({ settings, onStatusChange, onStat
             'line-cap': 'round'
           },
           paint: {
-            'line-color': '#FF00FF', // Neon Pink
-            'line-width': 4,
-            'line-opacity': 0.8
+            'line-color': [
+              'match',
+              ['get', 'class'],
+              ['residential', 'unclassified'], '#FF1493', // Deep Pink (Prime targets)
+              ['primary', 'secondary', 'tertiary', 'trunk'], '#FF8C00', // Dark Orange (Main roads)
+              ['living_street'], '#FFD700', // Gold (Slow/Shared)
+              ['footway', 'pedestrian', 'path', 'track', 'steps', 'cycleway'], '#00FFFF', // Cyan (Walking)
+              ['service', 'driveway', 'parking_aisle', 'parking'], '#696969', // Dim Gray (Private/Inaccessible)
+              '#FF00FF' // Fallback Neon Pink
+            ],
+            'line-width': [
+              'match',
+              ['get', 'class'],
+              ['primary', 'secondary', 'trunk'], 5,
+              ['footway', 'pedestrian', 'path'], 2,
+              ['service', 'driveway', 'parking_aisle'], 2,
+              4 // Default width
+            ],
+            'line-opacity': [
+              'match',
+              ['get', 'class'],
+              ['service', 'driveway', 'parking_aisle', 'parking'], 0.4, // Dim the inaccessible roads
+              0.8 // Default opacity
+            ]
           }
         });
       }
 
-      const endAnalysis = performance.now();
-
       // Update Stats
-      const countResult = await conn.query(`SELECT count(*) as c FROM undriven_roads`);
-      const count = Number(countResult.toArray()[0]['c']); // Simple access
-
       onStatsChange({
-        loadedSegments: 0, // Todo: count raw_roads
-        processedCoverage: coverageFeatures.length,
-        undrivenSegments: count,
-        queryTimeMs: Math.round(endAnalysis - startAnalysis)
+        loadedSegments: 0,
+        processedCoverage: result.stats.coveragePointsProcessed,
+        undrivenSegments: result.stats.undrivenSegmentsCount,
+        queryTimeMs: result.stats.queryTimeMs
       });
 
       onStatusChange(DataStatus.READY);
@@ -289,28 +225,9 @@ export const StreetGapMap: React.FC<Props> = ({ settings, onStatusChange, onStat
   }, [settings, onStatusChange, onStatsChange]);
 
   const fetchRoute = useCallback(async (points: [number, number][]) => {
-    if (points.length < 2) return;
-
-    try {
-      const coords = points.map(p => `${p[0]},${p[1]}`).join(';');
-      const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?geometries=geojson&overview=full`);
-      const data = await response.json();
-
-      if (data.code === 'Ok' && data.routes.length > 0) {
-        const route = data.routes[0].geometry;
-        if (map.current) {
-          (map.current.getSource('route-source') as maplibregl.GeoJSONSource).setData({
-            type: 'FeatureCollection',
-            features: [{
-              type: 'Feature',
-              properties: {},
-              geometry: route
-            }]
-          });
-        }
-      }
-    } catch (err) {
-      console.error("Routing error:", err);
+    const featureCollection = await RoutingService.fetchRoute(points);
+    if (featureCollection && map.current) {
+      (map.current.getSource('route-source') as maplibregl.GeoJSONSource).setData(featureCollection);
     }
   }, []);
 
@@ -369,16 +286,235 @@ export const StreetGapMap: React.FC<Props> = ({ settings, onStatusChange, onStat
     }
   }, [settings.routingMode]);
 
+  // Handle Automated Route Generation
+  useEffect(() => {
+    if (!map.current || !isMapReady) return;
+    const m = map.current;
+
+    const handleGenerateRoute = async (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const mode = customEvent.detail.mode as 'driving' | 'foot';
+
+      onStatusChange(DataStatus.PROCESSING);
+      
+      try {
+        // Extract the current pink undriven lines from the map source
+        const undrivenSource = m.getSource('undriven-source') as maplibregl.GeoJSONSource;
+        if (!undrivenSource) {
+           console.warn("No undriven roads calculated yet.");
+           onStatusChange(DataStatus.READY);
+           return;
+        }
+
+        // maplibregl doesn't expose a clean getter for source data unfortunately,
+        // so we use queryRenderedFeatures against the undriven-layer
+        let undrivenFeatures = m.queryRenderedFeatures(undefined, { layers: ['undriven-layer'] });
+
+        if (undrivenFeatures.length === 0) {
+           console.warn("No visible undriven roads to route through.");
+           onStatusChange(DataStatus.READY);
+           return;
+        }
+
+        // Filter by Overture class
+        const drivingClasses = ['residential', 'primary', 'secondary', 'tertiary', 'living_street', 'trunk', 'unclassified'];
+        const walkingClasses = ['footway', 'pedestrian', 'path', 'track', 'steps', 'cycleway'];
+
+        undrivenFeatures = undrivenFeatures.filter(f => {
+            const roadClass = f.properties?.class;
+            if (mode === 'driving') return drivingClasses.includes(roadClass);
+            if (mode === 'foot') return walkingClasses.includes(roadClass);
+            return true; 
+        });
+
+        // Clear existing markers since we're generating a bulk trip line
+        startMarker.current?.remove();
+        startMarker.current = null;
+        endMarker.current?.remove();
+        endMarker.current = null;
+        setRoutingPoints([]);
+
+        const featureCollection = await RoutingService.generateTrip(undrivenFeatures, mode);
+        
+        if (featureCollection) {
+          (m.getSource('route-source') as maplibregl.GeoJSONSource).setData(featureCollection);
+        } else {
+          console.warn("OSRM returned no viable trip spanning these segments.");
+        }
+        onStatusChange(DataStatus.READY);
+      } catch (err) {
+        console.error("Trip Generation Error:", err);
+        onStatusChange(DataStatus.ERROR);
+      }
+    };
+
+    window.addEventListener('generate-route', handleGenerateRoute);
+    return () => window.removeEventListener('generate-route', handleGenerateRoute);
+  }, [isMapReady, onStatusChange]);
+
+  // Handle Export Route to GPX
+  useEffect(() => {
+    if (!map.current || !isMapReady) return;
+    const m = map.current;
+
+    const handleExportRoute = () => {
+      try {
+        const routeSource = m.getSource('route-source') as maplibregl.GeoJSONSource;
+        if (!routeSource) {
+           console.warn("No route generated yet to export.");
+           return;
+        }
+
+        // To access the data of a GeoJSONSource safely without relying on unstable internals,
+        // we use querySourceFeatures to pull out all the routing segments we currently have
+        const routeFeatures = m.querySourceFeatures('route-source');
+        
+        if (!routeFeatures || routeFeatures.length === 0) {
+           console.warn("Route is empty, nothing to export.");
+           return;
+        }
+
+        const featureCollection = {
+          type: "FeatureCollection" as const,
+          features: routeFeatures.map(f => ({
+            type: "Feature" as const,
+            properties: f.properties || {},
+            geometry: f.geometry
+          }))
+        };
+
+        const gpxString = exportToGPX(featureCollection, "StreetGap Captured Route");
+        
+        // Trigger browser download
+        const blob = new Blob([gpxString], { type: 'application/gpx+xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `streetgap_route_${new Date().getTime()}.gpx`;
+        document.body.appendChild(a);
+        a.click();
+        
+        // Cleanup
+        setTimeout(() => {
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
+        }, 100);
+
+      } catch (err) {
+        console.error("Export Error:", err);
+      }
+    };
+
+    window.addEventListener('export-route', handleExportRoute);
+    return () => window.removeEventListener('export-route', handleExportRoute);
+  }, [isMapReady]);
+
   // Handle Coverage Visibility
   useEffect(() => {
     if (!isMapReady || !map.current) return;
     const m = map.current;
-    if (m.getLayer('coverage-layer')) {
-      const visibility = settings.showCoverage ? 'visible' : 'none';
-      console.log(`StreetGapMap: Toggling coverage visibility to ${visibility}`);
-      m.setLayoutProperty('coverage-layer', 'visibility', visibility);
+
+    const mvtSourceId = 'mapillary-mvt';
+    const mvtLayerId = 'mapillary-mvt-layer';
+
+    const updateLayer = () => {
+      // Validate the map is fully loaded before trying to add/update style sources
+      if (!m.isStyleLoaded()) {
+        m.once('styledata', updateLayer);
+        return;
+      }
+
+      // Calculate UNIX timestamp in milliseconds for the cutoff date
+      const cutoffMs = Date.now() - (settings.lookbackYears * 365.25 * 24 * 60 * 60 * 1000);
+
+      if (settings.showCoverage && settings.mapillaryToken) {
+        if (!m.getSource(mvtSourceId)) {
+          try {
+            // Add the official Mapillary Vector Tile layer for instant feedback
+            m.addSource(mvtSourceId, {
+              type: 'vector',
+              tiles: [
+                `https://tiles.mapillary.com/maps/vtp/mly1_public/2/{z}/{x}/{y}?access_token=${settings.mapillaryToken}`
+              ],
+              minzoom: 6,
+              maxzoom: 14
+            });
+            m.addLayer({
+              id: mvtLayerId,
+              type: 'line',
+              source: mvtSourceId,
+              'source-layer': 'sequence',
+              filter: ['>=', ['get', 'captured_at'], cutoffMs],
+              layout: {
+                'line-cap': 'round',
+                'line-join': 'round',
+                'visibility': 'visible'
+              },
+              paint: {
+                'line-opacity': 0.6,
+                'line-color': '#05CB63', // Mapillary green
+                'line-width': 2
+              }
+            });
+          } catch (e) {
+            console.error("Failed to add Mapillary MVT layer", e);
+          }
+        } else {
+          if (m.getLayer(mvtLayerId)) {
+            m.setLayoutProperty(mvtLayerId, 'visibility', 'visible');
+            m.setFilter(mvtLayerId, ['>=', ['get', 'captured_at'], cutoffMs]);
+          }
+        }
+      } else {
+        if (m.getLayer(mvtLayerId)) {
+          m.setLayoutProperty(mvtLayerId, 'visibility', 'none');
+        }
+      }
+
+      // Enforce Z-indexing whenever Mapillary loads so it stays on bottom
+      if (m.getLayer('undriven-layer')) m.moveLayer('undriven-layer');
+      if (m.getLayer('route-layer')) m.moveLayer('route-layer');
+
+    };
+
+    updateLayer();
+  }, [isMapReady, settings.showCoverage, settings.mapillaryToken, settings.lookbackYears]);
+
+  // Handle Route and Undriven Layer Visibility & Z-Indexing
+  useEffect(() => {
+    if (!isMapReady || !map.current) return;
+    const m = map.current;
+
+    // Toggle Undriven Gaps Layer Visibility and Class Filters
+    if (m.getLayer('undriven-layer')) {
+      m.setLayoutProperty('undriven-layer', 'visibility', settings.showUndriven ? 'visible' : 'none');
+
+      // Build the MapLibre filter array dynamically based on active UI toggles
+      const activeClasses: string[] = [];
+      if (settings.roadFilters.residential) activeClasses.push('residential', 'unclassified');
+      if (settings.roadFilters.main) activeClasses.push('primary', 'secondary', 'tertiary', 'trunk');
+      if (settings.roadFilters.living) activeClasses.push('living_street');
+      if (settings.roadFilters.pedestrian) activeClasses.push('footway', 'pedestrian', 'path', 'track', 'steps', 'cycleway');
+      if (settings.roadFilters.service) activeClasses.push('service', 'driveway', 'parking_aisle', 'parking');
+
+      if (activeClasses.length > 0) {
+        m.setFilter('undriven-layer', ['in', ['get', 'class'], ['literal', activeClasses]]);
+      } else {
+        // If everything is turned off, apply a filter that matches nothing
+        m.setFilter('undriven-layer', ['==', 'class', 'NONE']);
+      }
     }
-  }, [isMapReady, settings.showCoverage]);
+
+    // Toggle Generated Route Layer
+    if (m.getLayer('route-layer')) {
+      m.setLayoutProperty('route-layer', 'visibility', settings.showRoute ? 'visible' : 'none');
+    }
+    
+    // Enforce strict Z-Index order: Mapillary (bottom) -> Undriven -> Route (top)
+    if (m.getLayer('undriven-layer')) m.moveLayer('undriven-layer');
+    if (m.getLayer('route-layer')) m.moveLayer('route-layer');
+
+  }, [isMapReady, settings.showUndriven, settings.showRoute, settings.roadFilters]);
 
   // Hook up the moveend listener
   useEffect(() => {
@@ -420,9 +556,17 @@ export const StreetGapMap: React.FC<Props> = ({ settings, onStatusChange, onStat
 
         <button
           onClick={runAnalysis}
-          className="bg-pink-600 hover:bg-pink-500 text-white font-black py-4 px-10 rounded-full shadow-[0_0_20px_rgba(236,72,153,0.5)] border-2 border-white transition-all transform hover:scale-105 flex items-center gap-3 uppercase tracking-tighter text-lg border-neon-pink"
+          disabled={status !== DataStatus.IDLE && status !== DataStatus.READY && status !== DataStatus.ERROR}
+          className={`font-black py-4 px-10 rounded-full shadow-[0_0_20px_rgba(236,72,153,0.5)] border-2 border-white transition-all transform flex items-center gap-3 uppercase tracking-tighter text-lg border-neon-pink
+            ${status === DataStatus.PROCESSING || status === DataStatus.FETCHING_MAPILLARY || status === DataStatus.FETCHING_OVERTURE 
+              ? 'bg-pink-800 text-pink-300 cursor-not-allowed scale-100' 
+              : 'bg-pink-600 hover:bg-pink-500 hover:scale-105 text-white'}`}
         >
-          <span className="animate-pulse text-2xl">●</span> SCAN THIS AREA
+          {status === DataStatus.PROCESSING || status === DataStatus.FETCHING_MAPILLARY || status === DataStatus.FETCHING_OVERTURE ? (
+             <><span className="animate-spin text-2xl">◌</span> ANALYZING...</>
+          ) : (
+             <><span className="animate-pulse text-2xl">●</span> SCAN THIS AREA</>
+          )}
         </button>
       </div>
     </div>

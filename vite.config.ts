@@ -9,6 +9,13 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 3000,
       host: '0.0.0.0',
+      proxy: {
+        '/api/osrm': {
+          target: 'https://router.project-osrm.org',
+          changeOrigin: true,
+          rewrite: (path: string) => path.replace(/^\/api\/osrm/, ''),
+        },
+      },
     },
     plugins: [
       react(),

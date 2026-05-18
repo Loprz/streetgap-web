@@ -16,8 +16,16 @@ export interface MapSettings {
   lookbackYears: number; // Number of years to look back for coverage
   bufferSize: number; // Meters
   showCoverage: boolean;
+  showUndriven: boolean;
+  showRoute: boolean;
   mapillaryToken: string;
-  routingMode: boolean;
+  roadFilters: {
+    residential: boolean;
+    main: boolean;
+    living: boolean;
+    pedestrian: boolean;
+    service: boolean;
+  };
 }
 
 export enum DataStatus {

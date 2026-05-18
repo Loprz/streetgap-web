@@ -39,17 +39,17 @@ export class DuckDBService {
 
       this.conn = await this.db.connect();
 
-      // Explicitly load spatial extension.
+      // Explicitly load spatial and httpfs extensions.
       // Note: In some environments, auto-install fails. We attempt both install+load and direct load.
       try {
-        await this.conn.query(`INSTALL spatial; LOAD spatial;`);
+        await this.conn.query(`INSTALL spatial; LOAD spatial; INSTALL httpfs; LOAD httpfs;`);
       } catch (e) {
-        console.warn("Standard spatial install failed. Trying direct load...", e);
+        console.warn("Standard extensions install failed. Trying direct load...", e);
         try {
-          await this.conn.query(`LOAD spatial;`);
+          await this.conn.query(`LOAD spatial; LOAD httpfs;`);
         } catch (e2) {
-          console.error("Could not load spatial extension. Spatial queries will fail.", e2);
-          // We do not throw here to allow the app to render basic UI even if spatial fails
+          console.error("Could not load extensions. Network or spatial queries may fail.", e2);
+          // We do not throw here to allow the app to render basic UI even if it fails
         }
       }
 

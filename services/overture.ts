@@ -63,7 +63,7 @@ export class OvertureService {
         // Intersection check: Rect A (minX, minY, maxX, maxY) vs Rect B (bbox)
         return !(maxX < bbox.minLon || minX > bbox.maxLon || maxY < bbox.minLat || minY > bbox.maxLat);
       })
-      .map((item: any) => item.assets?.['aws-https']?.href || item.assets?.['azure-https']?.href)
+      .map((item: any) => item.assets?.['aws']?.href || item.assets?.['azure']?.href)
       .filter(Boolean);
 
     if (overlappingFiles.length === 0) {
@@ -86,10 +86,10 @@ export class OvertureService {
         class
       FROM read_parquet([${fileListSql}])
       WHERE 
-        bbox.xmin >= ${bbox.minLon} AND
-        bbox.ymin >= ${bbox.minLat} AND
-        bbox.xmax <= ${bbox.maxLon} AND
-        bbox.ymax <= ${bbox.maxLat}
+        bbox.xmin <= ${bbox.maxLon} AND
+        bbox.xmax >= ${bbox.minLon} AND
+        bbox.ymin <= ${bbox.maxLat} AND
+        bbox.ymax >= ${bbox.minLat}
         AND subtype = 'road'
     `);
   }
