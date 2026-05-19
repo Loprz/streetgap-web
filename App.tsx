@@ -87,12 +87,12 @@ const App: React.FC = () => {
               <Info size={14} /> Analysis Stats
             </h2>
             <div className="grid grid-cols-2 gap-4">
-              <div className="bg-slate-900 p-3 rounded border border-slate-800 border-neon-pink">
-                <div className="text-2xl font-mono text-pink-500 font-bold">{stats.undrivenSegments}</div>
+              <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 border-neon-pink border-breathe">
+                <div className="text-2xl font-mono text-pink-500 font-bold glow-pink">{stats.undrivenSegments}</div>
                 <div className="text-[10px] text-slate-400 uppercase font-black">Gaps Found</div>
               </div>
-              <div className="bg-slate-900 p-3 rounded border border-slate-800 border-neon-yellow">
-                <div className="text-2xl font-mono text-yellow-500 font-bold">{stats.queryTimeMs}ms</div>
+              <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 border-neon-yellow border-breathe">
+                <div className="text-2xl font-mono text-yellow-500 font-bold glow-yellow">{stats.queryTimeMs}ms</div>
                 <div className="text-[10px] text-slate-400 uppercase font-black">Compute Time</div>
               </div>
             </div>

@@ -52,22 +52,36 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
       map.current.on('load', () => {
         setIsMapReady(true);
         onStatusChange(DataStatus.IDLE);
-        // ... existing code ...
         // Add Route Source
         map.current?.addSource('route-source', {
           type: 'geojson',
           data: { type: 'FeatureCollection', features: [] }
         });
 
+        // Route GLOW underlay — wider, blurred, semi-transparent
+        map.current?.addLayer({
+          id: 'route-glow',
+          type: 'line',
+          source: 'route-source',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#00BFFF',
+            'line-width': 18,
+            'line-opacity': 0.25,
+            'line-blur': 12
+          }
+        });
+
+        // Route crisp line on top
         map.current?.addLayer({
           id: 'route-layer',
           type: 'line',
           source: 'route-source',
           layout: { 'line-join': 'round', 'line-cap': 'round' },
           paint: {
-            'line-color': '#00BFFF', // Deep Sky Blue for the route
-            'line-width': 6,
-            'line-opacity': 0.7
+            'line-color': '#00BFFF',
+            'line-width': 5,
+            'line-opacity': 0.85
           }
         });
       });
@@ -171,38 +185,66 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
           type: 'geojson',
           data: result.undrivenGeoJson
         });
+
+        // Color expression shared by glow + crisp layers
+        const undrivenColorExpr: any = [
+          'match',
+          ['get', 'class'],
+          ['residential', 'unclassified'], '#FF1493',
+          ['primary', 'secondary', 'tertiary', 'trunk'], '#FF8C00',
+          ['living_street'], '#FFD700',
+          ['footway', 'pedestrian', 'path', 'track', 'steps', 'cycleway'], '#00FFFF',
+          ['service', 'driveway', 'parking_aisle', 'parking'], '#696969',
+          '#FF00FF'
+        ];
+
+        // Undriven GLOW underlay — wider, blurred neon haze
+        map.current.addLayer({
+          id: 'undriven-glow',
+          type: 'line',
+          source: 'undriven-source',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': undrivenColorExpr,
+            'line-width': [
+              'match',
+              ['get', 'class'],
+              ['primary', 'secondary', 'trunk'], 16,
+              ['footway', 'pedestrian', 'path'], 8,
+              ['service', 'driveway', 'parking_aisle'], 8,
+              14
+            ],
+            'line-opacity': [
+              'match',
+              ['get', 'class'],
+              ['service', 'driveway', 'parking_aisle', 'parking'], 0.1,
+              0.2
+            ],
+            'line-blur': 10
+          }
+        });
+
+        // Undriven crisp line on top
         map.current.addLayer({
           id: 'undriven-layer',
           type: 'line',
           source: 'undriven-source',
-          layout: {
-            'line-join': 'round',
-            'line-cap': 'round'
-          },
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
           paint: {
-            'line-color': [
-              'match',
-              ['get', 'class'],
-              ['residential', 'unclassified'], '#FF1493', // Deep Pink (Prime targets)
-              ['primary', 'secondary', 'tertiary', 'trunk'], '#FF8C00', // Dark Orange (Main roads)
-              ['living_street'], '#FFD700', // Gold (Slow/Shared)
-              ['footway', 'pedestrian', 'path', 'track', 'steps', 'cycleway'], '#00FFFF', // Cyan (Walking)
-              ['service', 'driveway', 'parking_aisle', 'parking'], '#696969', // Dim Gray (Private/Inaccessible)
-              '#FF00FF' // Fallback Neon Pink
-            ],
+            'line-color': undrivenColorExpr,
             'line-width': [
               'match',
               ['get', 'class'],
               ['primary', 'secondary', 'trunk'], 5,
               ['footway', 'pedestrian', 'path'], 2,
               ['service', 'driveway', 'parking_aisle'], 2,
-              4 // Default width
+              4
             ],
             'line-opacity': [
               'match',
               ['get', 'class'],
-              ['service', 'driveway', 'parking_aisle', 'parking'], 0.4, // Dim the inaccessible roads
-              0.8 // Default opacity
+              ['service', 'driveway', 'parking_aisle', 'parking'], 0.4,
+              0.85
             ]
           }
         });
@@ -439,6 +481,23 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
               minzoom: 6,
               maxzoom: 14
             });
+            // Mapillary GLOW underlay
+            m.addLayer({
+              id: 'mapillary-mvt-glow',
+              type: 'line',
+              source: mvtSourceId,
+              'source-layer': 'sequence',
+              filter: ['>=', ['get', 'captured_at'], cutoffMs],
+              layout: { 'line-cap': 'round', 'line-join': 'round', 'visibility': 'visible' },
+              paint: {
+                'line-opacity': 0.15,
+                'line-color': '#05CB63',
+                'line-width': 8,
+                'line-blur': 6
+              }
+            });
+
+            // Mapillary crisp line on top
             m.addLayer({
               id: mvtLayerId,
               type: 'line',
@@ -451,8 +510,8 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
                 'visibility': 'visible'
               },
               paint: {
-                'line-opacity': 0.6,
-                'line-color': '#05CB63', // Mapillary green
+                'line-opacity': 0.7,
+                'line-color': '#05CB63',
                 'line-width': 2
               }
             });
@@ -464,15 +523,27 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
             m.setLayoutProperty(mvtLayerId, 'visibility', 'visible');
             m.setFilter(mvtLayerId, ['>=', ['get', 'captured_at'], cutoffMs]);
           }
+          if (m.getLayer('mapillary-mvt-glow')) {
+            m.setLayoutProperty('mapillary-mvt-glow', 'visibility', 'visible');
+            m.setFilter('mapillary-mvt-glow', ['>=', ['get', 'captured_at'], cutoffMs]);
+          }
         }
       } else {
         if (m.getLayer(mvtLayerId)) {
           m.setLayoutProperty(mvtLayerId, 'visibility', 'none');
         }
+        if (m.getLayer('mapillary-mvt-glow')) {
+          m.setLayoutProperty('mapillary-mvt-glow', 'visibility', 'none');
+        }
       }
 
-      // Enforce Z-indexing whenever Mapillary loads so it stays on bottom
+      // Enforce Z-indexing: glow layers behind their crisp counterparts
+      // Order bottom→top: mvt-glow → mvt → undriven-glow → undriven → route-glow → route
+      if (m.getLayer('mapillary-mvt-glow')) m.moveLayer('mapillary-mvt-glow');
+      if (m.getLayer(mvtLayerId)) m.moveLayer(mvtLayerId);
+      if (m.getLayer('undriven-glow')) m.moveLayer('undriven-glow');
       if (m.getLayer('undriven-layer')) m.moveLayer('undriven-layer');
+      if (m.getLayer('route-glow')) m.moveLayer('route-glow');
       if (m.getLayer('route-layer')) m.moveLayer('route-layer');
 
     };
@@ -486,6 +557,10 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
     const m = map.current;
 
     // Toggle Undriven Gaps Layer Visibility and Class Filters
+    // Sync glow layer visibility with the crisp layers
+    if (m.getLayer('undriven-glow')) {
+      m.setLayoutProperty('undriven-glow', 'visibility', settings.showUndriven ? 'visible' : 'none');
+    }
     if (m.getLayer('undriven-layer')) {
       m.setLayoutProperty('undriven-layer', 'visibility', settings.showUndriven ? 'visible' : 'none');
 
@@ -498,20 +573,31 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
       if (settings.roadFilters.service) activeClasses.push('service', 'driveway', 'parking_aisle', 'parking');
 
       if (activeClasses.length > 0) {
-        m.setFilter('undriven-layer', ['in', ['get', 'class'], ['literal', activeClasses]]);
+        const classFilter: any = ['in', ['get', 'class'], ['literal', activeClasses]];
+        m.setFilter('undriven-layer', classFilter);
+        if (m.getLayer('undriven-glow')) m.setFilter('undriven-glow', classFilter);
       } else {
         // If everything is turned off, apply a filter that matches nothing
-        m.setFilter('undriven-layer', ['==', 'class', 'NONE']);
+        const noneFilter: any = ['==', 'class', 'NONE'];
+        m.setFilter('undriven-layer', noneFilter);
+        if (m.getLayer('undriven-glow')) m.setFilter('undriven-glow', noneFilter);
       }
     }
 
     // Toggle Generated Route Layer
+    if (m.getLayer('route-glow')) {
+      m.setLayoutProperty('route-glow', 'visibility', settings.showRoute ? 'visible' : 'none');
+    }
     if (m.getLayer('route-layer')) {
       m.setLayoutProperty('route-layer', 'visibility', settings.showRoute ? 'visible' : 'none');
     }
     
-    // Enforce strict Z-Index order: Mapillary (bottom) -> Undriven -> Route (top)
+    // Enforce strict Z-Index order with glow layers behind their crisp counterparts
+    if (m.getLayer('mapillary-mvt-glow')) m.moveLayer('mapillary-mvt-glow');
+    if (m.getLayer('mapillary-mvt-layer')) m.moveLayer('mapillary-mvt-layer');
+    if (m.getLayer('undriven-glow')) m.moveLayer('undriven-glow');
     if (m.getLayer('undriven-layer')) m.moveLayer('undriven-layer');
+    if (m.getLayer('route-glow')) m.moveLayer('route-glow');
     if (m.getLayer('route-layer')) m.moveLayer('route-layer');
 
   }, [isMapReady, settings.showUndriven, settings.showRoute, settings.roadFilters]);
@@ -557,10 +643,10 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
         <button
           onClick={runAnalysis}
           disabled={status !== DataStatus.IDLE && status !== DataStatus.READY && status !== DataStatus.ERROR}
-          className={`font-black py-4 px-10 rounded-full shadow-[0_0_20px_rgba(236,72,153,0.5)] border-2 border-white transition-all transform flex items-center gap-3 uppercase tracking-tighter text-lg border-neon-pink
+          className={`font-black py-4 px-10 rounded-full border-2 border-white transition-all transform flex items-center gap-3 uppercase tracking-tighter text-lg border-neon-pink
             ${status === DataStatus.PROCESSING || status === DataStatus.FETCHING_MAPILLARY || status === DataStatus.FETCHING_OVERTURE 
               ? 'bg-pink-800 text-pink-300 cursor-not-allowed scale-100' 
-              : 'bg-pink-600 hover:bg-pink-500 hover:scale-105 text-white'}`}
+              : 'bg-pink-600 hover:bg-pink-500 hover:scale-105 text-white neon-glow-pulse'}`}
         >
           {status === DataStatus.PROCESSING || status === DataStatus.FETCHING_MAPILLARY || status === DataStatus.FETCHING_OVERTURE ? (
              <><span className="animate-spin text-2xl">◌</span> ANALYZING...</>
