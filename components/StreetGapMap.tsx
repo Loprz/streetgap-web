@@ -13,9 +13,10 @@ interface Props {
   status: DataStatus;
   onStatusChange: (status: DataStatus) => void;
   onStatsChange: (stats: ProcessingStats) => void;
+  onImageSelect?: (imageId: string) => void;
 }
 
-export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange, onStatsChange }) => {
+export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange, onStatsChange, onImageSelect }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
@@ -515,6 +516,43 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
                 'line-width': 2
               }
             });
+
+            // Mapillary clickable points
+            m.addLayer({
+              id: 'mapillary-mvt-points',
+              type: 'circle',
+              source: mvtSourceId,
+              'source-layer': 'image',
+              filter: ['>=', ['get', 'captured_at'], cutoffMs],
+              layout: {
+                'visibility': 'visible'
+              },
+              paint: {
+                'circle-radius': [
+                  'interpolate', ['linear'], ['zoom'],
+                  13, 2,
+                  15, 5
+                ],
+                'circle-color': '#05CB63',
+                'circle-opacity': 0.9,
+                'circle-stroke-width': 1,
+                'circle-stroke-color': '#000000'
+              }
+            });
+
+            // Add interactivity handlers for points
+            m.on('mouseenter', 'mapillary-mvt-points', () => { m.getCanvas().style.cursor = 'pointer'; });
+            m.on('mouseleave', 'mapillary-mvt-points', () => { m.getCanvas().style.cursor = ''; });
+
+            m.on('click', 'mapillary-mvt-points', (e) => {
+              if (!e.features || e.features.length === 0) return;
+              const feature = e.features[0];
+              if (feature.properties?.id) {
+                // Mapillary vector tiles use 'id' as the property for the image id
+                onImageSelect?.(feature.properties.id.toString());
+              }
+            });
+
           } catch (e) {
             console.error("Failed to add Mapillary MVT layer", e);
           }
@@ -527,6 +565,10 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
             m.setLayoutProperty('mapillary-mvt-glow', 'visibility', 'visible');
             m.setFilter('mapillary-mvt-glow', ['>=', ['get', 'captured_at'], cutoffMs]);
           }
+          if (m.getLayer('mapillary-mvt-points')) {
+            m.setLayoutProperty('mapillary-mvt-points', 'visibility', 'visible');
+            m.setFilter('mapillary-mvt-points', ['>=', ['get', 'captured_at'], cutoffMs]);
+          }
         }
       } else {
         if (m.getLayer(mvtLayerId)) {
@@ -535,12 +577,16 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
         if (m.getLayer('mapillary-mvt-glow')) {
           m.setLayoutProperty('mapillary-mvt-glow', 'visibility', 'none');
         }
+        if (m.getLayer('mapillary-mvt-points')) {
+          m.setLayoutProperty('mapillary-mvt-points', 'visibility', 'none');
+        }
       }
 
       // Enforce Z-indexing: glow layers behind their crisp counterparts
-      // Order bottom→top: mvt-glow → mvt → undriven-glow → undriven → route-glow → route
+      // Order bottom→top: mvt-glow → mvt → mvt-points → undriven-glow → undriven → route-glow → route
       if (m.getLayer('mapillary-mvt-glow')) m.moveLayer('mapillary-mvt-glow');
       if (m.getLayer(mvtLayerId)) m.moveLayer(mvtLayerId);
+      if (m.getLayer('mapillary-mvt-points')) m.moveLayer('mapillary-mvt-points');
       if (m.getLayer('undriven-glow')) m.moveLayer('undriven-glow');
       if (m.getLayer('undriven-layer')) m.moveLayer('undriven-layer');
       if (m.getLayer('route-glow')) m.moveLayer('route-glow');
@@ -595,6 +641,7 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
     // Enforce strict Z-Index order with glow layers behind their crisp counterparts
     if (m.getLayer('mapillary-mvt-glow')) m.moveLayer('mapillary-mvt-glow');
     if (m.getLayer('mapillary-mvt-layer')) m.moveLayer('mapillary-mvt-layer');
+    if (m.getLayer('mapillary-mvt-points')) m.moveLayer('mapillary-mvt-points');
     if (m.getLayer('undriven-glow')) m.moveLayer('undriven-glow');
     if (m.getLayer('undriven-layer')) m.moveLayer('undriven-layer');
     if (m.getLayer('route-glow')) m.moveLayer('route-glow');
@@ -624,7 +671,7 @@ export const StreetGapMap: React.FC<Props> = ({ settings, status, onStatusChange
       <div ref={mapContainer} className="w-full h-full" />
 
       {/* Map Overlay Controls */}
-      <div className="absolute top-6 left-6 z-10 w-full max-w-sm pointer-events-none">
+      <div className="absolute top-6 left-20 z-10 w-full max-w-sm pointer-events-none">
         <div className="pointer-events-auto">
           <SearchControl onSelect={handleSearchSelect} />
         </div>

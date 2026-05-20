@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { StreetGapMap } from './components/StreetGapMap';
+import { StreetLevelViewer } from './components/StreetLevelViewer';
 import { DataStatus, MapSettings, ProcessingStats } from './types';
 import { DuckDBService } from './services/db';
-import { Settings, Map, Database, Info, AlertTriangle, Layers, Navigation2 } from 'lucide-react';
+import { Settings, Map, Database, Info, AlertTriangle, Navigation2, PanelLeftClose, Menu } from 'lucide-react';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<DataStatus>(DataStatus.IDLE);
@@ -12,6 +13,7 @@ const App: React.FC = () => {
     undrivenSegments: 0,
     queryTimeMs: 0
   });
+  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
 
   const [settings, setSettings] = useState<MapSettings>(() => {
     const savedToken = localStorage.getItem('mapillaryToken');
@@ -279,20 +281,23 @@ const App: React.FC = () => {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 relative">
-        <button
-          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-          className="absolute top-4 left-4 z-50 bg-slate-950/80 backdrop-blur text-white p-2 rounded hover:bg-slate-900 transition-colors border border-slate-700"
-        >
-          {isSidebarOpen ? <Layers size={20} /> : <Settings size={20} />}
-        </button>
+      <div className="flex-1 flex overflow-hidden">
+        <div className={`relative h-full transition-all duration-300 ${selectedImageId ? 'w-[60%]' : 'w-full'}`}>
+          <button
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="absolute top-6 left-6 z-50 bg-slate-950/90 backdrop-blur text-white p-2.5 rounded-lg hover:bg-pink-600 transition-colors border border-slate-700 shadow-lg"
+            title={isSidebarOpen ? "Close Sidebar" : "Open Sidebar"}
+          >
+            {isSidebarOpen ? <PanelLeftClose size={20} /> : <Menu size={20} />}
+          </button>
 
-        <StreetGapMap
-          settings={settings}
-          status={status}
-          onStatusChange={setStatus}
-          onStatsChange={setStats}
-        />
+          <StreetGapMap
+            settings={settings}
+            status={status}
+            onStatusChange={setStatus}
+            onStatsChange={setStats}
+            onImageSelect={setSelectedImageId}
+          />
 
         {/* Dynamic Legend & Filters */}
         {settings.showUndriven && (
@@ -351,6 +356,18 @@ const App: React.FC = () => {
               </label>
 
             </div>
+          </div>
+        )}
+        </div>
+        
+        {/* Street-Level Viewer Panel */}
+        {selectedImageId && (
+          <div className="w-[40%] h-full shrink-0">
+            <StreetLevelViewer
+              imageId={selectedImageId}
+              accessToken={settings.mapillaryToken}
+              onClose={() => setSelectedImageId(null)}
+            />
           </div>
         )}
       </div>
