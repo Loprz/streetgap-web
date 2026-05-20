@@ -42,7 +42,7 @@ It cross-references **Overture Maps Foundation** road data with **Mapillary** co
   <img src="docs/screenshots/app-overview.png" alt="StreetGap initial view" width="800" />
 </p>
 
-The app launches with a dark CartoDB basemap, a collapsible sidebar with a step-by-step capture workflow, and the prominent **SCAN THIS AREA** button. Configure your Mapillary token and freshness window, then scan any neighborhood.
+The app launches with a dark CartoDB basemap, a collapsible sidebar with a step-by-step capture workflow, and the prominent **SCAN THIS AREA** button. Paste your Mapillary token (saved to `localStorage`), set the freshness window and tolerance radius, then scan any neighborhood.
 
 ### 📊 Gap Analysis — Color-Coded Undriven Roads
 <p align="center">
@@ -56,7 +56,7 @@ After scanning, undriven roads are rendered in vibrant color-coded segments by r
 - 🔵 **Cyan** — Pedestrian / Cycle paths
 - ⚫ **Gray** — Service / Private roads
 
-Green lines show existing Mapillary coverage. Toggle individual road types on/off with the legend filters.
+Toggle individual road types on/off with the legend filters in the bottom-right corner.
 
 ### 🧭 Route Generation — Optimized Capture Path
 <p align="center">
