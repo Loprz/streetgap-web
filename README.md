@@ -63,7 +63,7 @@ Green lines show existing Mapillary coverage. Toggle individual road types on/of
   <img src="docs/screenshots/route-generation.png" alt="Generated driving route through undriven roads" width="800" />
 </p>
 
-Generate a driving or walking route that efficiently connects all undriven road segments. The blue route line shows the OSRM-optimized path through the gaps. Export as GPX and load into your favorite navigation app.
+Generate a driving or walking route that efficiently connects all undriven road segments. The cyan route line shows the OSRM-optimized path weaving through every gap. Use the Display Options toggles to isolate the route, undriven gaps, or Mapillary coverage. Export as GPX and load into your favorite navigation app.
 
 ---
 
